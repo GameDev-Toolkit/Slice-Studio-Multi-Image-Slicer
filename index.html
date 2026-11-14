@@ -3,154 +3,473 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<!--
+  The app is fully self-contained: it loads nothing from other origins and never sends anything
+  anywhere. The policy enforces that. Images are decoded from blob: URLs created in the page.
+-->
+<meta http-equiv="Content-Security-Policy"
+    content="
+      default-src 'none';
+      script-src 'self';
+      style-src 'self';
+      img-src 'self' blob:;
+      base-uri 'none';
+      form-action 'none'
+    ">
+<meta name="description"
+    content="Slice images along draggable guides and export the tiles as a ZIP. Runs entirely in your browser.">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#2a2a2a">
 <title>Slice Studio — Multi-Image Slicer</title>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="styles.css">
+
+<!--
+  Classic scripts rather than ES modules, so the app also works when index.html is opened
+  straight from disk (browsers refuse to load modules over file://). Order matters: each file
+  only depends on the ones above it.
+-->
+<script src="vendor/jszip/jszip.min.js" defer></script>
+<script src="js/util.js" defer></script>
+<script src="js/slicing.js" defer></script>
+<script src="js/naming.js" defer></script>
+<script src="js/viewport.js" defer></script>
+<script src="js/keys.js" defer></script>
+<script src="js/history.js" defer></script>
+<script src="js/project.js" defer></script>
+<script src="js/settings.js" defer></script>
+<script src="js/images.js" defer></script>
+<script src="js/exporter.js" defer></script>
+<script src="js/renderer.js" defer></script>
+<script src="js/stage.js" defer></script>
+<script src="js/file-list.js" defer></script>
+<script src="js/toast.js" defer></script>
+<script src="js/export-panel.js" defer></script>
+<script src="js/main.js" defer></script>
 </head>
 <body>
+  <svg class="icon-sprite" aria-hidden="true" focusable="false">
+    <symbol id="i-plus" viewBox="0 0 16 16">
+      <path d="M8 3v10M3 8h10"/>
+    </symbol>
+    <symbol id="i-minus" viewBox="0 0 16 16">
+      <path d="M3 8h10"/>
+    </symbol>
+    <symbol id="i-close" viewBox="0 0 16 16">
+      <path d="M4 4l8 8M12 4l-8 8"/>
+    </symbol>
+    <symbol id="i-download" viewBox="0 0 16 16">
+      <path d="M8 2v8M4.5 6.5 8 10l3.5-3.5M3 13.5h10"/>
+    </symbol>
+    <symbol id="i-undo" viewBox="0 0 16 16">
+      <path d="M5.5 3.5l-3 3 3 3M2.5 6.5H9a3.5 3.5 0 0 1 0 7H6"/>
+    </symbol>
+    <symbol id="i-redo" viewBox="0 0 16 16">
+      <path d="M10.5 3.5l3 3-3 3M13.5 6.5H7a3.5 3.5 0 0 0 0 7h3"/>
+    </symbol>
+    <symbol id="i-guide-v" viewBox="0 0 16 16">
+      <path d="M2.5 4.5h11v7h-11zM8 1.5v13"/>
+    </symbol>
+    <symbol id="i-guide-h" viewBox="0 0 16 16">
+      <path d="M4.5 2.5h7v11h-7zM1.5 8h13"/>
+    </symbol>
+    <symbol id="i-trash" viewBox="0 0 16 16">
+      <path d="M3 4.5h10M6.5 4.5v-2h3v2M4.5 4.5l.5 9h6l.5-9"/>
+    </symbol>
+    <symbol id="i-copy-all" viewBox="0 0 16 16">
+      <path d="M5.5 5.5h8v8h-8zM2.5 10.5v-8h8"/>
+    </symbol>
+    <symbol id="i-cols" viewBox="0 0 16 16">
+      <path d="M2.5 2.5h11v11h-11zM6.2 2.5v11M9.8 2.5v11"/>
+    </symbol>
+    <symbol id="i-rows" viewBox="0 0 16 16">
+      <path d="M2.5 2.5h11v11h-11zM2.5 6.2h11M2.5 9.8h11"/>
+    </symbol>
+    <symbol id="i-fit" viewBox="0 0 16 16">
+      <path d="M2.5 6V2.5H6M10 2.5h3.5V6M13.5 10v3.5H10M6 13.5H2.5V10"/>
+    </symbol>
+    <symbol id="i-grid" viewBox="0 0 16 16">
+      <path d="M2.5 2.5h11v11h-11zM2.5 8h11M8 2.5v11"/>
+    </symbol>
+  </svg>
+
   <div class="app">
 
-    <!-- ============================================================
-         SIDEBAR
-         ============================================================ -->
-    <aside class="sidebar">
-      <div class="sidebar-header">
-        <div class="brand">
-          <span class="brand-dot"></span>
+    <header class="app-header">
+      <div class="brand-row">
+        <h1 class="brand">
+          <span class="brand-dot" aria-hidden="true"></span>
           <span>Slice Studio</span>
-        </div>
-        <button class="upload-btn" id="btnUpload" type="button">
-          <span class="btn-icon">＋</span>
-          <span>Upload Images</span>
-        </button>
-        <input type="file" id="fileInput" class="hidden-input" accept="image/*" multiple>
+        </h1>
+        <button class="help-btn" id="btnHelp" type="button"
+            title="Shortcuts and file name placeholders (?)" aria-label="Help"
+            aria-haspopup="dialog">?</button>
       </div>
+      <button class="upload-btn" id="btnUpload" type="button">
+        <svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>
+        <span class="btn-label" id="uploadLabel">Add images</span>
+      </button>
+      <input type="file" id="fileInput" accept="image/*" multiple hidden>
+    </header>
 
-      <div class="sidebar-section-title">
-        <span>□</span>
-        <span>Project Files</span>
-      </div>
-      <div class="file-list" id="fileList">
-        <div class="empty-files" id="emptyFiles">No images yet.<br>Upload one or more files to begin slicing.</div>
-      </div>
+    <nav class="files" aria-labelledby="filesTitle">
+      <h2 class="panel-title c-magenta" id="filesTitle">Project files</h2>
+      <ul class="file-list" id="fileList"></ul>
+      <p class="empty-files" id="emptyFiles">
+        No images yet.<br>
+        Add, drop or paste images to begin slicing.
+      </p>
+    </nav>
 
-      <div class="sidebar-footer">
-        <button class="btn btn-export" id="btnExport" type="button" title="Slice every image and download a ZIP">
-          <span class="btn-icon">⬇</span><span class="btn-label">Export ZIP</span>
-        </button>
-      </div>
-    </aside>
-
-    <!-- ============================================================
-         WORKSPACE — toolbar + canvas
-         ============================================================ -->
     <main class="workspace">
-      <header class="toolbar">
+      <div class="toolbar">
 
-        <!-- Guides -->
-        <div class="panel-section">
-          <div class="section-header c-magenta">
-            <span>⏐</span><span>Guides</span>
-          </div>
+        <div class="panel-section" role="group" aria-labelledby="sectionHistory">
+          <div class="section-header c-faint" id="sectionHistory">History</div>
           <div class="section-body">
-            <button class="btn" id="btnAddVertical" type="button" title="Add a vertical guide">
-              <span class="btn-icon">⏐</span><span>Vertical</span>
+            <button class="btn btn--icon" id="btnUndo" type="button" title="Undo (Ctrl+Z)"
+                aria-label="Undo" disabled>
+              <svg class="icon" aria-hidden="true"><use href="#i-undo"/></svg>
             </button>
-            <button class="btn" id="btnAddHorizontal" type="button" title="Add a horizontal guide">
-              <span class="btn-icon">⎯</span><span>Horizontal</span>
-            </button>
-            <button class="btn" id="btnClearGuides" type="button" title="Remove all guides from this image">
-              <span class="btn-icon">⨯</span><span>Clear</span>
+            <button class="btn btn--icon" id="btnRedo" type="button" title="Redo (Ctrl+Shift+Z)"
+                aria-label="Redo" disabled>
+              <svg class="icon" aria-hidden="true"><use href="#i-redo"/></svg>
             </button>
           </div>
         </div>
 
-        <!-- Zoom -->
-        <div class="panel-section">
-          <div class="section-header c-blue">
-            <span>⤢</span><span>Zoom</span>
-          </div>
+        <div class="panel-section" role="group" aria-labelledby="sectionGuides">
+          <div class="section-header c-magenta" id="sectionGuides">Guides</div>
           <div class="section-body">
-            <button class="btn" id="btnZoomOut" type="button" title="Zoom out">
-              <span class="btn-icon">－</span>
+            <button class="btn btn--collapsible" id="btnAddVertical" type="button"
+                title="Add a vertical guide (V)" disabled>
+              <svg class="icon" aria-hidden="true"><use href="#i-guide-v"/></svg>
+              <span class="btn-label">Vertical</span>
             </button>
-            <span class="zoom-readout" id="zoomLabel">--</span>
-            <button class="btn" id="btnZoomIn" type="button" title="Zoom in">
-              <span class="btn-icon">＋</span>
+            <button class="btn btn--collapsible" id="btnAddHorizontal" type="button"
+                title="Add a horizontal guide (H)" disabled>
+              <svg class="icon" aria-hidden="true"><use href="#i-guide-h"/></svg>
+              <span class="btn-label">Horizontal</span>
             </button>
-            <button class="btn" id="btnZoomReset" type="button" title="Fit image to screen">
-              <span class="btn-icon">⤢</span><span>Fit</span>
+            <label class="field"
+                title="Position of the selected guide in pixels. Click a guide to select it.">
+              <span class="field-label" id="guideAxis">px</span>
+              <input type="number" id="guidePosition" class="num-input num-input--wide" min="1"
+                  step="1" inputmode="numeric" aria-label="Position of the selected guide in pixels"
+                  disabled>
+            </label>
+            <button class="btn btn--collapsible" id="btnClearGuides" type="button"
+                title="Remove all guides from this image" disabled>
+              <svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg>
+              <span class="btn-label">Clear</span>
+            </button>
+            <button class="btn btn--collapsible" id="btnApplyToAll" type="button"
+                title="Copy this image's guides to every other image, scaled to fit" disabled>
+              <svg class="icon" aria-hidden="true"><use href="#i-copy-all"/></svg>
+              <span class="btn-label">To all</span>
             </button>
           </div>
         </div>
 
-        <!-- Split -->
-        <div class="panel-section">
-          <div class="section-header c-orange">
-            <span>Ⅲ</span><span>Split</span>
-          </div>
+        <div class="panel-section" role="group" aria-labelledby="sectionSplit">
+          <div class="section-header c-orange" id="sectionSplit">Split</div>
           <div class="section-body">
-            <input type="number" id="splitCount" class="split-input" min="2" max="50" value="2" title="Number of equal parts">
-            <button class="btn" id="btnSplitCols" type="button" title="Replace vertical guides with N evenly spaced ones">
-              <span class="btn-icon">Ⅲ</span><span>Cols</span>
+            <input type="number" id="splitValue" class="num-input" min="2" step="1" value="2"
+                inputmode="numeric" aria-label="Split value" disabled>
+            <select id="splitUnit" class="select" aria-label="Split by"
+                title="Split into a number of equal parts, or into cells of a fixed pixel size"
+                disabled>
+              <option value="count">parts</option>
+              <option value="px">px</option>
+            </select>
+            <button class="btn btn--collapsible" id="btnSplitCols" type="button"
+                title="Replace the vertical guides with an even split" disabled>
+              <svg class="icon" aria-hidden="true"><use href="#i-cols"/></svg>
+              <span class="btn-label">Cols</span>
             </button>
-            <button class="btn" id="btnSplitRows" type="button" title="Replace horizontal guides with N evenly spaced ones">
-              <span class="btn-icon">☰</span><span>Rows</span>
+            <button class="btn btn--collapsible" id="btnSplitRows" type="button"
+                title="Replace the horizontal guides with an even split" disabled>
+              <svg class="icon" aria-hidden="true"><use href="#i-rows"/></svg>
+              <span class="btn-label">Rows</span>
             </button>
           </div>
         </div>
 
-        <!-- Output -->
-        <div class="panel-section">
-          <div class="section-header c-yellow">
-            <span>⊞</span><span>Output</span>
-          </div>
+        <div class="panel-section" role="group" aria-labelledby="sectionView">
+          <div class="section-header c-blue" id="sectionView">View</div>
           <div class="section-body">
-            <button class="btn" id="btnTogglePreview" type="button" title="Show row/column numbers and pixel dimensions for every slice">
-              <span class="btn-icon">⊞</span><span>Preview</span>
+            <button class="btn btn--icon" id="btnZoomOut" type="button" title="Zoom out (−)"
+                aria-label="Zoom out" disabled>
+              <svg class="icon" aria-hidden="true"><use href="#i-minus"/></svg>
             </button>
-            <button class="btn" id="btnToggleFixedSize" type="button" title="Pad or crop every exported slice onto a fixed-size canvas">
-              <span class="btn-icon">⬚</span><span>Fixed Size</span>
+            <button class="btn zoom-readout" id="btnZoomActual" type="button"
+                title="Zoom to 100% (1)" aria-label="Zoom level. Activate to zoom to 100%"
+                disabled>--</button>
+            <button class="btn btn--icon" id="btnZoomIn" type="button" title="Zoom in (+)"
+                aria-label="Zoom in" disabled>
+              <svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>
             </button>
-            <input type="number" id="fixedWidth" class="split-input" min="1" max="10000" value="100" title="Output width (px)" disabled>
-            <span class="dim-sep">×</span>
-            <input type="number" id="fixedHeight" class="split-input" min="1" max="10000" value="100" title="Output height (px)" disabled>
+            <button class="btn btn--collapsible" id="btnZoomFit" type="button"
+                title="Fit the image to the window (0)" disabled>
+              <svg class="icon" aria-hidden="true"><use href="#i-fit"/></svg>
+              <span class="btn-label">Fit</span>
+            </button>
+            <button class="btn btn--collapsible" id="btnTogglePreview" type="button"
+                aria-pressed="false"
+                title="Label every tile with its row, column and pixel size (P)">
+              <svg class="icon" aria-hidden="true"><use href="#i-grid"/></svg>
+              <span class="btn-label">Preview</span>
+            </button>
           </div>
         </div>
 
-        <!-- Shortcuts hint -->
-        <div class="panel-section panel-section--flex">
-          <div class="section-header c-faint">
-            <span>?</span><span>Shortcuts</span>
-          </div>
-          <div class="section-body">
-            <span class="hint"><kbd>Space</kbd>+drag or middle-click to pan · scroll to zoom · double-click or <kbd>Del</kbd> to remove a guide · drop images anywhere to upload</span>
-          </div>
-        </div>
+      </div>
 
-      </header>
-
-      <div class="stage" id="stage">
-        <canvas id="canvas"></canvas>
-        <div class="guide-tooltip hidden" id="tooltip"></div>
-        <div class="status-bar hidden" id="statusBar">
+      <div class="stage">
+        <canvas id="canvas" role="application"
+            aria-label="Slicing canvas. Press the question mark key for keyboard shortcuts."
+            tabindex="0"></canvas>
+        <div class="guide-tooltip" id="tooltip" hidden></div>
+        <div class="status-bar" id="statusBar" hidden>
           <span id="statusPosition">—</span>
-          <span class="status-sep">·</span>
+          <span class="status-sep" aria-hidden="true">·</span>
           <span id="statusSlices">—</span>
-          <span class="status-sep">·</span>
+          <span class="status-sep" aria-hidden="true">·</span>
           <span id="statusImage">—</span>
         </div>
         <div class="empty-state" id="emptyState">
-          <div class="big">No image selected</div>
-          <div class="small">Upload one or more images from the left sidebar, then add vertical and horizontal guides to define your slices.</div>
+          <p class="big">No image selected</p>
+          <p class="small">
+            Drop images anywhere, paste them from the clipboard or choose files, then add guides to
+            define your slices. Nothing leaves your device.
+          </p>
+          <button class="btn" id="btnBrowse" type="button">
+            <svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>
+            <span>Choose images</span>
+          </button>
         </div>
       </div>
     </main>
 
+    <section class="export-panel" aria-label="Export">
+      <details class="export-settings" id="exportSettings" open>
+        <summary class="panel-title c-yellow">Export settings</summary>
+        <div class="form">
+          <div class="form-row">
+            <label class="form-label" for="exportFormat">Format</label>
+            <select id="exportFormat" class="select">
+              <option value="png">PNG</option>
+              <option value="jpeg">JPEG</option>
+              <option value="webp">WebP</option>
+            </select>
+            <label class="form-label form-label--inline" for="exportQuality">Quality</label>
+            <input type="number" id="exportQuality" class="num-input" min="10" max="100" step="1"
+                inputmode="numeric" title="Encoder quality, 10 to 100. Only used by JPEG and WebP.">
+          </div>
+
+          <div class="form-row form-row--stacked">
+            <label class="form-label" for="nameTemplate">File name</label>
+            <input type="text" id="nameTemplate" class="text-input" maxlength="120"
+                spellcheck="false" autocomplete="off" autocapitalize="off"
+                aria-describedby="nameExample"
+                title="Placeholders: {name} {row} {col} {index} {x} {y}. Use / to create folders. The ? button lists them all.">
+            <output class="form-hint" id="nameExample" for="nameTemplate"></output>
+          </div>
+
+          <div class="form-row">
+            <label class="check"
+                title="Center every tile on a canvas of this size: smaller tiles are padded, larger ones are cropped, nothing is scaled">
+              <input type="checkbox" id="fixedSizeEnabled"><span>Fixed size</span>
+            </label>
+            <input type="number" id="fixedWidth" class="num-input num-input--wide" min="1"
+                max="10000" step="1" inputmode="numeric" aria-label="Fixed width in pixels"
+                title="Width (px)">
+            <span class="dim-sep" aria-hidden="true">×</span>
+            <input type="number" id="fixedHeight" class="num-input num-input--wide" min="1"
+                max="10000" step="1" inputmode="numeric" aria-label="Fixed height in pixels"
+                title="Height (px)">
+          </div>
+
+          <label class="check" title="Leave fully transparent tiles out of the archive">
+            <input type="checkbox" id="skipEmpty"><span>Skip empty tiles</span>
+          </label>
+          <label class="check"
+              title="Add a manifest.json listing every tile with its source rectangle">
+            <input type="checkbox" id="includeManifest"><span>Add manifest.json</span>
+          </label>
+
+          <div class="form-row">
+            <label class="form-label" for="exportScope">Images</label>
+            <select id="exportScope" class="select select--grow">
+              <option value="all">All images</option>
+              <option value="active">Current image only</option>
+            </select>
+          </div>
+        </div>
+      </details>
+
+      <div class="export-actions">
+        <p class="export-summary" id="exportSummary"></p>
+        <div class="export-buttons">
+          <button class="btn btn-export" id="btnExport" type="button"
+              title="Slice and download a ZIP (Ctrl+S)" disabled>
+            <svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>
+            <span class="btn-label" id="exportLabel">Export ZIP</span>
+          </button>
+          <button class="btn" id="btnCancelExport" type="button" hidden>Cancel</button>
+        </div>
+      </div>
+    </section>
+
   </div>
 
-<script src="app.js"></script>
+  <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
+
+  <dialog class="dialog" id="helpDialog" aria-labelledby="helpTitle">
+    <header class="dialog-header">
+      <h2 id="helpTitle">Help</h2>
+      <button class="btn btn--icon" id="btnCloseHelp" type="button" aria-label="Close">
+        <svg class="icon" aria-hidden="true"><use href="#i-close"/></svg>
+      </button>
+    </header>
+    <div class="dialog-body">
+      <h3>Keyboard and mouse</h3>
+      <table class="shortcuts">
+        <tbody>
+          <tr>
+            <th scope="row"><kbd>V</kbd> <kbd>H</kbd></th>
+            <td>Add a vertical / horizontal guide, under the pointer when it is over the image</td>
+          </tr>
+          <tr>
+            <th scope="row">Drag</th>
+            <td>Move a guide; drag it off the image to remove it</td>
+          </tr>
+          <tr>
+            <th scope="row"><kbd>,</kbd> <kbd>.</kbd></th>
+            <td>Select the previous / next guide</td>
+          </tr>
+          <tr>
+            <th scope="row"><kbd>←</kbd> <kbd>→</kbd> <kbd>↑</kbd> <kbd>↓</kbd></th>
+            <td>
+              Nudge the selected guide by 1 px, or 10 px with <kbd>Shift</kbd>. Pans the view when
+              no guide is selected
+            </td>
+          </tr>
+          <tr>
+            <th scope="row"><kbd>Del</kbd></th>
+            <td>
+              Remove the guide under the pointer or the selected one. Double-click does the same
+            </td>
+          </tr>
+          <tr>
+            <th scope="row"><kbd>Esc</kbd></th>
+            <td>Cancel a drag, or clear the selection</td>
+          </tr>
+          <tr>
+            <th scope="row"><kbd>Ctrl</kbd>+<kbd>Z</kbd></th>
+            <td>
+              Undo. <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> or
+              <kbd>Ctrl</kbd>+<kbd>Y</kbd> to redo
+            </td>
+          </tr>
+          <tr>
+            <th scope="row"><kbd>Ctrl</kbd>+<kbd>C</kbd> <kbd>Ctrl</kbd>+<kbd>V</kbd></th>
+            <td>Copy and paste guides between images. Pasting an image adds it to the project</td>
+          </tr>
+          <tr>
+            <th scope="row">Wheel</th>
+            <td>Zoom at the pointer. Pinch to zoom on touch screens and most trackpads</td>
+          </tr>
+          <tr>
+            <th scope="row"><kbd>+</kbd> <kbd>−</kbd></th>
+            <td>Zoom in / out</td>
+          </tr>
+          <tr>
+            <th scope="row"><kbd>0</kbd> <kbd>1</kbd></th>
+            <td>Fit to window / zoom to 100%</td>
+          </tr>
+          <tr>
+            <th scope="row"><kbd>Space</kbd>+drag</th>
+            <td>Pan. Dragging empty space or the middle mouse button pans too</td>
+          </tr>
+          <tr>
+            <th scope="row"><kbd>[</kbd> <kbd>]</kbd></th>
+            <td>Previous / next image</td>
+          </tr>
+          <tr>
+            <th scope="row"><kbd>P</kbd></th>
+            <td>Toggle the tile preview</td>
+          </tr>
+          <tr>
+            <th scope="row"><kbd>Ctrl</kbd>+<kbd>S</kbd></th>
+            <td>Export ZIP</td>
+          </tr>
+        </tbody>
+      </table>
+      <p class="dialog-note">On macOS use <kbd>⌘</kbd> instead of <kbd>Ctrl</kbd>.</p>
+
+      <h3>File name placeholders</h3>
+      <table class="shortcuts">
+        <tbody>
+          <tr>
+            <th scope="row"><code>{name}</code></th>
+            <td>Source file name without its extension</td>
+          </tr>
+          <tr>
+            <th scope="row"><code>{row}</code> <code>{col}</code></th>
+            <td>Row and column, counted from 1</td>
+          </tr>
+          <tr>
+            <th scope="row"><code>{index}</code></th>
+            <td>
+              Running number within the image, counted from 1, left to right then top to bottom
+            </td>
+          </tr>
+          <tr>
+            <th scope="row"><code>{row0}</code> <code>{col0}</code> <code>{index0}</code></th>
+            <td>The same, counted from 0</td>
+          </tr>
+          <tr>
+            <th scope="row"><code>{x}</code> <code>{y}</code></th>
+            <td>Top-left corner of the tile in the source image, in pixels</td>
+          </tr>
+          <tr>
+            <th scope="row"><code>{index:3}</code></th>
+            <td>Any number can be zero-padded: <code>007</code></td>
+          </tr>
+          <tr>
+            <th scope="row"><code>/</code></th>
+            <td>Starts a folder, e.g. <code>{name}/{row}_{col}</code></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </dialog>
+
+  <template id="fileItemTemplate">
+    <li class="file-item">
+      <button class="file-select" type="button">
+        <canvas class="file-thumb" width="36" height="36" aria-hidden="true"></canvas>
+        <span class="file-info">
+          <span class="file-name"></span>
+          <span class="file-meta"></span>
+        </span>
+      </button>
+      <button class="file-remove" type="button">
+        <svg class="icon" aria-hidden="true"><use href="#i-close"/></svg>
+      </button>
+    </li>
+  </template>
+
+  <template id="toastTemplate">
+    <div class="toast">
+      <span class="toast-message"></span>
+      <button class="toast-action" type="button" hidden></button>
+      <button class="toast-close" type="button" aria-label="Dismiss">
+        <svg class="icon" aria-hidden="true"><use href="#i-close"/></svg>
+      </button>
+    </div>
+  </template>
 </body>
 </html>
